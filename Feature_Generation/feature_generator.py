@@ -134,7 +134,7 @@ class Data_Store():
 
                     if f"EMA({parameter_combination['length']}) {parameter_combination['source']}" not in self.feature_df.columns:
 
-                        feature = ta.ema(close = self.data[parameter_combination['source']], length = parameter_combination['length']) # Calculate the EMA
+                        feature = ta.ema(close = self.data[parameter_combination['source']], length = parameter_combination['length']) / self.data[parameter_combination['source']] # Calculate the EMA
                         self.feature_df[f"EMA({parameter_combination['length']}) {parameter_combination['source']}"] = feature # Save it into the output dataframe
 
                 except:
@@ -278,7 +278,7 @@ class Data_Store():
         
 
             elif self.feature == 'Return':
-                    # Try Caclulating MACD if not we will raise an error showing that some of the mandatory features are missing
+                    # Try Caclulating Returns if not we will raise an error showing that some of the mandatory features are missing
                     try:
 
                         # Set up that the default MACD will be calculated on close prices i.e. we do not have to pass it as a hyperparameter by default
@@ -300,10 +300,39 @@ class Data_Store():
                             f"Return requires 1 mandatory arguements 'length' in int format, make sure the data has a 'close' column otherise manually set a 'source' ")
 
 
-if __name__ == "__main__":
-    data = pd.read_csv("BTCUSDT3600.csv")
+            elif self.feature == 'BBWP':
+                    
+                    from bbwp import bbwp
+                    
+                    # Try Caclulating BBWP if not we will raise an error showing that some of the mandatory features are missing
+                    try:
 
-    features = Data_Store(data, 'SMA', {"lookback": [40, 60, 80]} )
+                        # Set up that the default BBWP will be calculated on close prices i.e. we do not have to pass it as a hyperparameter by default
+                        if 'source' not in parameter_combination.keys():
+                            parameter_combination['source'] = 'close'
+
+                        # Set up that the default BBWP will be calculated using an SMA i.e. we do not have to pass it as a hyperparameter by default
+                        if 'ma_type' not in parameter_combination.keys():
+                            parameter_combination['ma_type'] = 'sma'
+
+                        # There is a possibility that some rudimentary parametres except the ones used for calculating BBWP are passed i.e. we have 'lookback', 'length', "ma_type" and "asd" hyperparemetres
+                        # Clearly the script might make combinations of each value of 'lookback', 'length', "ma_type" with  "asd", however, this will be redundant as we will need only one unique combination of 'lookback', 'length', "ma_type" regardless of "asd" values
+                        # In short this saves time
+
+
+                        if f"BBWP({parameter_combination['length']}) {parameter_combination['lookback']} {parameter_combination['ma_type']} {parameter_combination['source']}" not in self.feature_df.columns:
+                            feature = bbwp(self.data[parameter_combination['source']], length = parameter_combination['length'], lookback= parameter_combination['lookback'], ma_type= parameter_combination['ma_type'])
+
+                            self.feature_df[f"BBWP({parameter_combination['length']}) {parameter_combination['lookback']} {parameter_combination['ma_type']} {parameter_combination['source']}"] = feature
+                    except:
+                        raise ValueError(
+                            f"BBWP requires 2 mandatory arguements 'length' and 'lookback' in int format, make sure the data has a 'close' column otherise manually set a 'source', if you want to change the ma use 'ma_source' ")
+
+
+if __name__ == "__main__":
+    data = pd.read_csv("BTCUSDT3600_First_5k.csv")
+
+    features = Data_Store(data, 'BBWP', {"length": [13, 25], 'lookback': [168, 336], 'source': "Close"} )
 
 
     print(features)

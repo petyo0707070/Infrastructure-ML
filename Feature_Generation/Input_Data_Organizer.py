@@ -63,13 +63,21 @@ class Input_Data_Organizer:
                  # Reversability
                  Use_Reversability = False,
                  Reversability_Lookback = 60, # Do at least 60 otherwise the calculations might not be stable 
-                 Reversability_Source = 'Close'               
+                 Reversability_Source = 'Close',
+
+                 #BBWP
+                 Use_BBWP = False,
+                 BBWP_Length = 13,
+                 BBWP_Lookback = 252,
+                 BBWP_Source = 'Close',
+                 BBWP_MA_Type = 'sma'          
                  ):
 
 
 
         self.Data = pd.read_csv(Data)
         self.Data["Date"] = pd.to_datetime(self.Data["Date"])
+
 
         #SMA ----------------------------------
         self.Use_SMA = Use_SMA
@@ -109,6 +117,13 @@ class Input_Data_Organizer:
         self.Reversability_Lookback = Reversability_Lookback
         self.Reversability_Source = Reversability_Source
 
+        # BBWP ----------------------------------
+        self.Use_BBWP = Use_BBWP
+        self.BBWP_Length = BBWP_Length
+        self.BBWP_Lookback = BBWP_Lookback
+        self.BBWP_Source = BBWP_Source
+        self.BBWP__MA_Type = BBWP_MA_Type
+
 
         if self.Use_SMA:
             self.Calculate_SMAs()
@@ -130,6 +145,9 @@ class Input_Data_Organizer:
 
         if self.Use_Reversability:
             self.Calculate_Reversability()
+
+        if self.Use_BBWP:
+            self.Calculate_BBWP()
 
         # Drop initial rows with NaN
         self.Drop_NaN_Rows()
@@ -215,6 +233,16 @@ class Input_Data_Organizer:
                                         {'lookback': self.Reversability_Lookback,
                                          'source': self.Reversability_Source})
         self.Data[self.Reversability.columns] = self.Reversability
+        return self.Data
+    
+    def Calculate_BBWP(self):
+        self.BBWP = Data_Store(self.Data,
+                               'BBWP',
+                               {"length": self.BBWP_Length,
+                                "lookback": self.BBWP_Lookback,
+                                'source': self.BBWP_Source,
+                                'ma_type': self.BBWP__MA_Type})
+        self.Data[self.BBWP.columns] = self.BBWP
         return self.Data
 
     def Drop_NaN_Rows(self):
