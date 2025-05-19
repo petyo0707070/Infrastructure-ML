@@ -62,14 +62,14 @@ Organizer = Input_Data_Organizer(
     EMA_Source='Close',
 
     # Returns--------------------
-    Use_Return=True,
+    Use_Return=False,
     # Choose Length or Lengths for Return
-    Return_Length=list(np.arange(1, 20, 2)),
+    Return_Length=list(np.arange(1, 10, 1)),
     # Choose What to Column to use to Calculate Return on
     Return_Source='Close',
 
     # MACD
-    Use_MACD=True,
+    Use_MACD=False,
     MACD_Signal = 9,
     MACD_Fast = 12,
     MACD_Slow = 26,
@@ -77,24 +77,32 @@ Organizer = Input_Data_Organizer(
 
     # RSI
     Use_RSI = True,
-    RSI_Length = [8,14,22],
+    RSI_Length = [8,14,22, 34, 55],
     RSI_Source = 'Close',
 
     # Hawkes
     Use_Hawkes = True,
-    Hawkes_Kappa = [0.01, 0.1, 0.5], # Decay factor
+    Hawkes_Kappa = [0.1, 0.5], # Decay factor
     Hawkes_Lookback = 168, # Lookback
     Hawkes_Source = ['High', 'Low', 'Close'], # Hawkes requires the order to be High, Low, Close always  ,
 
     # Reversability
     Use_Reversability = False,
     Reversability_Lookback = [72, 168],
-    Reversability_Source = 'Close'
+    Reversability_Source = 'Close',
+
+    # BBWP
+    Use_BBWP = False,
+    BBWP_Length = [13, 26],
+    BBWP_Lookback = [168],
+    BBWP_Source = ['Close'],
+    BBWP_MA_Type = 'sma'    
 )
 
 Input_Data = Organizer.Return_Data()
 
 print(Input_Data)
+
 
 
 
@@ -122,21 +130,23 @@ print(Input_Data)
 Parallel_CNN_Classifier(
     # Dataset
     Data=Input_Data,
-    t_n=49,
-    include_ohlcv = False, # Whether to include OHLCV as features in the training of the model
+    t_n=13,
+    include_ohlcv = True, # Whether to include OHLCV as features in the training of the model
+    predict_return_positive = False,# Predicting Positive or Negative Return
 
     ####### Creating the Model #########
-    kernel_depth = 60,
+    kernel_depth = 72,
 
     conv_branches=[
-        {"filters": 64, "kernel_size": 6},
-        {"filters": 32, "kernel_size": 12},
-        {"filters": 16, "kernel_size": 24},
-        {"filters": 8, "kernel_size": 48}
+        [{"filters": 64, "kernel_size": 6}, {"filters": 128, "kernel_size": 3}],
+        [{"filters": 32, "kernel_size": 12}, {"filters": 64, "kernel_size": 6}],
+        [{"filters": 16, "kernel_size": 36}, {"filters": 64, "kernel_size": 12}],
+        [{"filters": 8, "kernel_size": 60}, {"filters": 16, "kernel_size": 24}]
     ],
-    pool_type="max",  # or "avg"
-    pool_size=2,
-    dropout_rate=0.4,
+    pool_type="max",  # "max" or "avg"
+    pool_size=3,
+    dropout_rate=0.3,
+    dense_layer_dropout_rate = 0.3, 
 
     dense_layers=[
         {"units": 256, "activation": "relu"},
@@ -154,7 +164,7 @@ Parallel_CNN_Classifier(
     metrics=['accuracy', Precision(name='precision')],
 
     ####### Training the Model ##########
-    epochs=100,
+    epochs=30,
     batch_size=64
 )
 
