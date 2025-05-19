@@ -12,26 +12,34 @@ def Load_Data_From_CSV(data, t=1, t_n=5):
     # Check the data types of the columns
     # Create labels based on future price movements
     try:
-        data['Label'] = ( (data['Close'].shift(-t_n) - data['Open'].shift(-t) ) / data['Open'].shift(-t) < -0.00 ).astype(int)
-        data['Return'] = ( (data['Close'].shift(-t_n) - data['Open'].shift(-t) ) / data['Open'].shift(-t) )
+        return_ = (data['Close'].shift(-t_n) - data['Open'].shift(-t) ) / data['Open'].shift(-t)
+        data['Label'] = ( (return_ > - 0.01) & (return_ < 0.01) ).astype(int)
+        #data['Label'] = (return_ < -0.01).astype(int)
+
+        data['1-Period Forward Return'] = (data['Close'].shift(-1) - data['Close'] ) / data['Close']
+        data['Return'] = return_
     
     except:
-        data['Label'] = ( (data['close'].shift(-t_n) - data['open'].shift(-t) ) / data['open'].shift(-t) < -0.00 ).astype(int)
-        data['Return'] = ( (data['close'].shift(-t_n) - data['open'].shift(-t) ) / data['open'].shift(-t) )
+        return_ = (data['close'].shift(-t_n) - data['open'].shift(-t) ) / data['open'].shift(-t)
+        data['Label'] = ( (return_ > - 0.01) & (return_ < 0.01) ).astype(int)
+        #data['Label'] = (return_ < -0.01).astype(int)
+
+        data['1-Period Forward Return'] = (data['close'].shift(-1) - data['close'] ) / data['close']
+        data['Return'] = return_
     
     print("Label distribution:\n", data['Label'].value_counts())
 
 
-    # Save the last 10% of rows for prediction and add 2 rows for embargo, this will be our out of sample data
-    unknown_data = data[int(0.9 * len(data)) + 2:].copy()
-    unknown_data = unknown_data[: - t_n]
+    # Save the last 10% of rows for prediction and add self.t_n rows for an offset, this will be our out of sample data
+    test_data = data[int(0.9 * len(data)) + t_n:].copy()
+    test_data = test_data[: - t_n]
 
     #unknown_data.dropna(inplace = True)
 
     # Take the first 90% as known data, this will be the training and validation data
-    known_data = data.iloc[:int(0.9 * len(data))].copy()
+    training_validation_data = data.iloc[:int(0.9 * len(data))].copy()
 
-    return known_data, unknown_data
+    return training_validation_data, test_data
 
 # Optional: test run
 if __name__ == "__main__":

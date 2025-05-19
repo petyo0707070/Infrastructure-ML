@@ -7,35 +7,47 @@ def build_parallel_cnn_model(
     pool_type="max",  # "max" or "avg"
     pool_size=2,
     dropout_rate=0.3,
+    dense_layer_dropout_rate = 0.3,
     dense_layers=[{"units": 128, "activation": "relu"}],
     output_units=3,
     output_activation="softmax",
     padding="same"  # User chooses whether to use padding
 ):
     # Check if padding is needed based on kernel size
-    for branch in conv_branches:
-        kernel_size = branch["kernel_size"]
-        if padding == "valid" and (input_shape[0] - kernel_size + 1) < 1:
-            raise ValueError(f"Padding 'valid' cannot be used with kernel_size={kernel_size} on input_shape={input_shape}. Choose 'same' padding instead.")
+    for branch_layers in conv_branches:
+        for layer in branch_layers:
+            kernel_size = layer["kernel_size"]
+            if padding == "valid" and (input_shape[0] - kernel_size + 1) < 1:
+                raise ValueError(
+                    f"Padding 'valid' cannot be used with kernel_size={kernel_size} on input_shape={input_shape}. "
+                    "Choose 'same' padding instead."
+                )
 
     input_layer = Input(shape=input_shape)
     branches = []
 
-    for branch in conv_branches:
-        x = Conv1D(
-            filters=branch["filters"],
-            kernel_size=branch["kernel_size"],
-            activation="relu",
-            padding=padding  # Use user-selected padding
-        )(input_layer)
+    for branch_layers in conv_branches:
+        x = input_layer
+        for layer in branch_layers:
+            # Validate kernel size and padding
+            kernel_size = layer["kernel_size"]
+            #if padding == "valid" and (x.shape[1] is not None) and ((x.shape[1] - kernel_size + 1) < 1):
+            #    raise ValueError(f"Invalid padding with kernel_size={kernel_size} on input_shape={x.shape}")
 
-        if pool_type == "max":
-            x = MaxPooling1D(pool_size=pool_size)(x)
-        elif pool_type == "avg":
-            x = AveragePooling1D(pool_size=pool_size)(x)
+            x = Conv1D(
+                filters=layer["filters"],
+                kernel_size=kernel_size,
+                activation="relu",
+                padding=padding
+            )(x)
 
-        if dropout_rate > 0:
-            x = Dropout(dropout_rate)(x)
+            if pool_type == "max":
+                x = MaxPooling1D(pool_size=pool_size)(x)
+            elif pool_type == "avg":
+                x = AveragePooling1D(pool_size=pool_size)(x)
+
+            if dropout_rate > 0:
+                x = Dropout(dropout_rate)(x)
 
         branches.append(x)
 
@@ -44,6 +56,10 @@ def build_parallel_cnn_model(
 
     for dense_layer in dense_layers:
         x = Dense(dense_layer["units"], activation=dense_layer["activation"])(x)
+
+            # Add Dropout after each Dense layer (if dense_laer_dropout_rate > 0)
+        if dense_layer_dropout_rate > 0:
+            x = Dropout(dense_layer_dropout_rate)(x)  # Add dropout here for regularization
 
     output_layer = Dense(output_units, activation=output_activation)(x)
     model = Model(inputs=input_layer, outputs=output_layer)

@@ -42,6 +42,7 @@ class Parallel_CNN_Classifier:
                  Data='BTCUSDT3600',
                  t_n=5,
                  include_ohlcv = False,
+                 predict_return_positive = True,
 
                  ####### Creating the Model #########
                  kernel_depth = 60, # The max lookback that the kernel would be able to go 
@@ -49,6 +50,7 @@ class Parallel_CNN_Classifier:
                  pool_type="max",  # "max" or "avg"
                  pool_size=2,
                  dropout_rate=0.3,
+                 dense_layer_dropout_rate = 0.3,
                  dense_layers=[{"units": 128, "activation": "relu"}],
                  output_units=1,
                  output_activation="sigmoid",
@@ -63,10 +65,18 @@ class Parallel_CNN_Classifier:
                  ):
         
         # Assert that  the kernel depth is at least as big as the biggest kernel_size
-        assert(kernel_depth > max([x['kernel_size'] for x in conv_branches]))
+        max_kernel_size = 0
+
+        for y in conv_branches:
+            for x in y:
+                if x['kernel_size'] > max_kernel_size:
+                    max_kernel_size = x['kernel_size']
+
+        assert(kernel_depth > max_kernel_size)
         self.Data = Data
         self.t_n = t_n
         self.include_ohlcv = include_ohlcv
+        self.predict_return_positive = predict_return_positive
         self.scaler = StandardScaler()
         self.model = None
         self.history = None
@@ -76,6 +86,7 @@ class Parallel_CNN_Classifier:
         self.pool_type = pool_type
         self.pool_size = pool_size
         self.dropout_rate = dropout_rate
+        self.dense_layer_dropout_rate = dense_layer_dropout_rate
         self.dense_layers = dense_layers
         self.output_units = output_units
         self.output_activation = output_activation
@@ -92,44 +103,54 @@ class Parallel_CNN_Classifier:
 
 
         self.Features_Train_reshaped = self.create_sliding_windows(data_1 = self.Features_Train)
+        self.Features_Validation_reshaped = self.create_sliding_windows(data_1= self.Features_Validation)
         self.Features_Test_reshaped = self.create_sliding_windows(data_1 = self.Features_Test)
         self.build_model()
 
         self.train()
 
         self.evaluate()  # No inputs
-        self.predict_unknown()  # No inputs
         self.plot_Confusion_Matrix()  # No inputs
         self.plot_Accuracy_Precision()  # No inputs
 
     def load_and_prepare_data(self):
-        Known_Data, Unknown_Data = Load_Data_From_CSV(self.Data,
+        training_validation_data, test_data = Load_Data_From_CSV(self.Data,
                                                       t=1,
                                                       t_n=self.t_n)
-        self.Unknown_Data = Unknown_Data
+        
+        # The label offset is already implemented in Load_Data for the test set
+        self.Features_Test = test_data.drop(columns = ['Label', 'Date', 'Return', '1-Period Forward Return'])
+        self.Labels_Test = test_data[['Label', 'Return', '1-Period Forward Return']]
 
         if self.include_ohlcv:
-            Features = Known_Data.drop(columns=['Label', 'Date', 'Return'])  # Sanity Check Known_Data[['Label']] vs Known_Data.drop(columns='Label')
+            Features = training_validation_data.drop(columns=['Label', 'Date', 'Return', '1-Period Forward Return'])  # Sanity Check Known_Data[['Label']] vs Known_Data.drop(columns='Label')
         else:
             try:
                 try:
-                    Features = Known_Data.drop(columns=['Label', 'Date', 'Return', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                    Features = training_validation_data.drop(columns=['Label', 'Date', 'Return', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                    self.Features_Test = self.Features_Test.drop( columns = ['Open', 'High', 'Low', 'Close', 'Volume'])
                 except:
-                    Features = Known_Data.drop(columns=['Label', 'Date', 'Return', 'open', 'high', 'low', 'close', 'volume'])
+                    Features = training_validation_data.drop(columns=['Label', 'Date', 'Return', 'open', 'high', 'low', 'close', 'volume'])
+                    self.Features_Test = self.Features_Test.drop( columns = ['open', 'high', 'low', 'close', 'volume'])
+
             except:
                 raise ValueError("Either include columns written as OHLCV or ohlcv i.e. 'Close' or 'close', you need all 5 columns present")
 
-        Labels = Known_Data[['Label', 'Return']]
+        Labels = training_validation_data[['Label', 'Return', '1-Period Forward Return']]
 
-        self.Features_Train, self.Features_Test, self.Labels_Train, self.Labels_Test = train_test_split(Features,
+        self.Features_Train, self.Features_Validation, self.Labels_Train, self.Labels_Validation = train_test_split(Features,
                                                                                                         Labels,
-                                                                                                        test_size=0.3,
+                                                                                                        test_size=0.2,
                                                                                                         shuffle=False
                                                                                                         )
+        
+        self.Features_Validation = self.Features_Validation[self.t_n:]
+        self.Labels_Validation = self.Labels_Validation[self.t_n:]
+
+
         ################# For Future Make Sure to Scale only Based On data up to t0 to avoid future data leakage#######
         self.Features_Train = self.scaler.fit_transform(self.Features_Train)
-
-
+        self.Features_Validation = self.scaler.transform(self.Features_Validation)
         self.Features_Test = self.scaler.transform(self.Features_Test)
 
         #print(self.Features_Train.shape)
@@ -152,6 +173,7 @@ class Parallel_CNN_Classifier:
             pool_type=self.pool_type,
             pool_size=self.pool_size,
             dropout_rate=self.dropout_rate,
+            dense_layer_dropout_rate = self.dense_layer_dropout_rate,
             dense_layers=self.dense_layers,
             output_units=self.output_units,
             output_activation=self.output_activation,
@@ -172,7 +194,7 @@ class Parallel_CNN_Classifier:
             self.Labels_Train[self.kernel_depth - 1:]['Label'],
             epochs=self.epochs,
             batch_size=self.batch_size,
-            validation_data=(self.Features_Test_reshaped, self.Labels_Test[self.kernel_depth - 1:]['Label'])
+            validation_data=(self.Features_Validation_reshaped, self.Labels_Validation[self.kernel_depth - 1:]['Label'])
         )
 
     def evaluate(self):
@@ -184,32 +206,83 @@ class Parallel_CNN_Classifier:
         print(f"Test Precision: {precision:.4f}")
 
         preds = (self.model.predict(self.Features_Test_reshaped) > 0.5).astype(int)
+        in_position = False
+        entry_i = 0
+        equity_curve = []
+
+        #for i in range(0, len(preds)):
+
+        #    if in_position == False and preds[i] == 1:
+        #        entry_i = i
+        #        in_position = True
+
+        #        if self.predict_return_positive:
+        #            equity_curve.append(self.Labels_Test.iloc[i]['Return'])
+        #        else:
+        #            equity_curve.append(-1 * self.Labels_Test.iloc[i]['Return'])
+            
+        #    if in_position == True and i < entry_i + self.t_n:
+        #        equity_curve.append(0)
+            
+        #    if in_position == True and i >= entry_i + self.t_n:
+        #        in_position = False 
+        #        entry_i = 0
+
+# Implementation of an equity curve which continiously updates the postion, goes from a position size of -1 to 1 and changes by 10% of position size per prediction
+# Currently testing the idea that continiously enter into the position based on prediction, but we close continiously after t_n canldes, essentially mimicking the entry logic
+
+        position_entries = {int(i) : 0 for i in range(0, len(preds))}
+        position_multiplyer = 0
+        multiplyer_step = 0.1
+
+
+        for i in range(0, len(preds)): # Loop over each candle
+
+            # First examine the case if we are interested in longs
+            if self.predict_return_positive == 1:
+
+                if preds[i] == 1: # If it signals to go long
+
+                    if position_multiplyer < 1: # Enter the position and hence only keep in mind the exits which are applicable if we were not in the full position
+                        position_multiplyer += multiplyer_step
+                        position_entries[i] = 1
+                
+                else: # For now this is a question, of whether we should do anything if we get a print of 0 for now we skip
+                    pass
+
+                if i >= self.t_n:  # We start checking for set-ups that have played out only after t_n candles have passed since we started counting
+                    if position_entries[i - self.t_n] == 1: # Check if t_n candles have passed since entry
+                        position_multiplyer += - multiplyer_step
+
+
+            # This code snippet takes care of the short side of the trades
+            if self.predict_return_positive == 0:
+
+                if preds[i] == 1: # If it signals to go short
+
+                    if position_multiplyer > -1: # Enter the position and hence only keep in mind the exits which are applicable if we were not in the full position
+                        position_multiplyer += -multiplyer_step
+                        position_entries[i] = 1
+
+
+                    else: # For now this is a question, of whether we should do anything if we get a print of 0 for now we skip
+                        pass
+
+                    if i >= self.t_n:  # We start checking for set-ups that have played out only after t_n candles have passed since we started counting
+                        if position_entries[i - self.t_n] == 1: # Check if t_n candles have passed since entry
+                            position_multiplyer += multiplyer_step
+
+            equity_curve.append(position_multiplyer * self.Labels_Test.iloc[i]['1-Period Forward Return'])
+
+        plt.plot(np.cumsum(equity_curve))
+        plt.title("Equity Curve on the Test Set")
+        plt.show()               
+
+
         print(confusion_matrix(self.Labels_Test[self.kernel_depth - 1:]['Label'], preds))
         print(classification_report(self.Labels_Test[self.kernel_depth - 1:]['Label'], preds))
 
-    def predict_unknown(self):
-        ################# For Future Make Sure to Scale only Based On data up to t0 to avoid future data leakage#######
 
-        if self.include_ohlcv:
-            unknown_scaled = self.scaler.transform(self.Unknown_Data.drop(columns=['Label', 'Date', 'Return'], axis = 1))
-        else:
-            try:
-                unknown_scaled = self.scaler.transform(self.Unknown_Data.drop(columns=['Label', 'Date', 'Return', 'Open', 'High', 'Low', 'Close', 'Volume'], axis = 1))
-            except:
-                unknown_scaled = self.scaler.transform(self.Unknown_Data.drop(columns=['Label', 'Date', 'Return', 'open', 'high', 'low', 'close', 'volume'], axis = 1))
-
-
-        if len(unknown_scaled) <= self.kernel_depth:
-            print(f"Can't carry out a Out of Sample test as we need at least {self.kernel_depth + 1} observations given your current kernel depth and t_n specifications, your out of sample right now only has {len(unknown_scaled)}")
-            predictions = []
-
-        else:
-            self.unknown_reshaped = self.create_sliding_windows(data_1= unknown_scaled)
-            self.unknown_label = self.Unknown_Data[self.kernel_depth - 1:]
-            predictions = (self.model.predict(self.unknown_reshaped ) > 0.5).astype(int)
-
-        print(predictions)
-        return predictions
 
     def plot_Confusion_Matrix(self):
         preds = (self.model.predict(self.Features_Test_reshaped) > 0.5).astype(int)
