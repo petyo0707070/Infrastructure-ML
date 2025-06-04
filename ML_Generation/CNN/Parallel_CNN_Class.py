@@ -35,22 +35,63 @@ from Load_Data import Load_Data_From_CSV
 # Import Customizable Parallel CNN Model
 from Customizable_Parallel_CNN import build_parallel_cnn_model  # Import the new CNN function
 
+from tensorflow.keras.utils import Sequence
+
+
+class NoisySequence(Sequence):
+
+    def __init__(self, x, y, batch_size=32, noise_std=0.5, shuffle=True):
+        self.x = x
+        self.y = y
+        self.batch_size = batch_size
+        self.noise_std = noise_std
+        self.shuffle = shuffle
+        self.indices = np.arange(len(x))
+        self.on_epoch_end()
+
+    def __len__(self):
+        return int(np.ceil(len(self.x) / self.batch_size))
+
+    def __getitem__(self, index):
+        batch_indices = self.indices[index * self.batch_size:(index + 1) * self.batch_size]
+
+        x_batch = self.x[batch_indices]
+        y_batch = self.y[batch_indices]
+
+        # Add Gaussian noise
+        noise = np.random.normal(loc=0.0, scale=self.noise_std, size=x_batch.shape)
+        x_batch_noisy = np.clip(x_batch + noise, 0.0, 1.0)
+
+        return x_batch_noisy, y_batch
+
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+
+    @property
+    def num_batches(self):
+        return self.__len__()
+
+
 
 class Parallel_CNN_Classifier:
     def __init__(self,
                  # Dataset
                  Data='BTCUSDT3600',
                  t_n=5,
-                 include_ohlcv = False,
-                 predict_return_positive = True,
+                 include_ohlcv=False,
+                 predict_return_positive=True,
+                 add_noise_to_training = False,
+                 plot_feature_correlation_matrix = False,
 
                  ####### Creating the Model #########
-                 kernel_depth = 60, # The max lookback that the kernel would be able to go 
-                 conv_branches=[{"filters": 64, "kernel_size": 3}], # Notice the difference with kernel_size which is how many rows at once does the kernel analyze
+                 kernel_depth=60,  # The max lookback that the kernel would be able to go
+                 conv_branches=[{"filters": 64, "kernel_size": 3}],
+                 # Notice the difference with kernel_size which is how many rows at once does the kernel analyze
                  pool_type="max",  # "max" or "avg"
                  pool_size=2,
                  dropout_rate=0.3,
-                 dense_layer_dropout_rate = 0.3,
+                 dense_layer_dropout_rate=0.3,
                  dense_layers=[{"units": 128, "activation": "relu"}],
                  output_units=1,
                  output_activation="sigmoid",
@@ -63,7 +104,7 @@ class Parallel_CNN_Classifier:
                  epochs=30,
                  batch_size=64
                  ):
-        
+
         # Assert that  the kernel depth is at least as big as the biggest kernel_size
         max_kernel_size = 0
 
@@ -72,11 +113,13 @@ class Parallel_CNN_Classifier:
                 if x['kernel_size'] > max_kernel_size:
                     max_kernel_size = x['kernel_size']
 
-        assert(kernel_depth > max_kernel_size)
+        assert (kernel_depth > max_kernel_size)
         self.Data = Data
         self.t_n = t_n
         self.include_ohlcv = include_ohlcv
         self.predict_return_positive = predict_return_positive
+        self.add_noise_to_training = add_noise_to_training
+        self.plot_feature_correlation_matrix = plot_feature_correlation_matrix
         self.scaler = StandardScaler()
         self.model = None
         self.history = None
@@ -101,10 +144,9 @@ class Parallel_CNN_Classifier:
 
         self.load_and_prepare_data()
 
-
-        self.Features_Train_reshaped = self.create_sliding_windows(data_1 = self.Features_Train)
-        self.Features_Validation_reshaped = self.create_sliding_windows(data_1= self.Features_Validation)
-        self.Features_Test_reshaped = self.create_sliding_windows(data_1 = self.Features_Test)
+        self.Features_Train_reshaped = self.create_sliding_windows(data_1=self.Features_Train)
+        self.Features_Validation_reshaped = self.create_sliding_windows(data_1=self.Features_Validation)
+        self.Features_Test_reshaped = self.create_sliding_windows(data_1=self.Features_Test)
         self.build_model()
 
         self.train()
@@ -115,46 +157,55 @@ class Parallel_CNN_Classifier:
 
     def load_and_prepare_data(self):
         training_validation_data, test_data = Load_Data_From_CSV(self.Data,
-                                                      t=1,
-                                                      t_n=self.t_n)
-        
+                                                                 t=1,
+                                                                 t_n=self.t_n)
+
         # The label offset is already implemented in Load_Data for the test set
-        self.Features_Test = test_data.drop(columns = ['Label', 'Date', 'Return', '1-Period Forward Return'])
+        self.Features_Test = test_data.drop(columns=['Label', 'Date', 'Return', '1-Period Forward Return'])
         self.Labels_Test = test_data[['Label', 'Return', '1-Period Forward Return']]
 
         if self.include_ohlcv:
-            Features = training_validation_data.drop(columns=['Label', 'Date', 'Return', '1-Period Forward Return'])  # Sanity Check Known_Data[['Label']] vs Known_Data.drop(columns='Label')
+            Features = training_validation_data.drop(columns=['Label', 'Date', 'Return',
+                                                              '1-Period Forward Return'])  # Sanity Check Known_Data[['Label']] vs Known_Data.drop(columns='Label')
         else:
             try:
                 try:
-                    Features = training_validation_data.drop(columns=['Label', 'Date', 'Return', 'Open', 'High', 'Low', 'Close', 'Volume'])
-                    self.Features_Test = self.Features_Test.drop( columns = ['Open', 'High', 'Low', 'Close', 'Volume'])
+                    Features = training_validation_data.drop(
+                        columns=['1-Period Forward Return','Label', 'Date', 'Return', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                    self.Features_Test = self.Features_Test.drop(columns=['Open', 'High', 'Low', 'Close', 'Volume'])
                 except:
-                    Features = training_validation_data.drop(columns=['Label', 'Date', 'Return', 'open', 'high', 'low', 'close', 'volume'])
-                    self.Features_Test = self.Features_Test.drop( columns = ['open', 'high', 'low', 'close', 'volume'])
+                    Features = training_validation_data.drop(
+                        columns=['1-Period Forward Return', 'Label', 'Date', 'Return', 'open', 'high', 'low', 'close', 'volume'])
+                    self.Features_Test = self.Features_Test.drop(columns=['open', 'high', 'low', 'close', 'volume'])
 
             except:
-                raise ValueError("Either include columns written as OHLCV or ohlcv i.e. 'Close' or 'close', you need all 5 columns present")
+                raise ValueError(
+                    "Either include columns written as OHLCV or ohlcv i.e. 'Close' or 'close', you need all 5 columns present")
 
         Labels = training_validation_data[['Label', 'Return', '1-Period Forward Return']]
 
-        self.Features_Train, self.Features_Validation, self.Labels_Train, self.Labels_Validation = train_test_split(Features,
-                                                                                                        Labels,
-                                                                                                        test_size=0.2,
-                                                                                                        shuffle=False
-                                                                                                        )
-        
+        if self.plot_feature_correlation_matrix:
+            correlation_matrix = Features.corr()
+            sns.heatmap(correlation_matrix, annot = True, cmap = 'coolwarm')
+            plt.title('Feature Correlation Matrix')
+            plt.show()
+
+        self.Features_Train, self.Features_Validation, self.Labels_Train, self.Labels_Validation = train_test_split(
+            Features,
+            Labels,
+            test_size=0.2,
+            shuffle=False
+            )
+
         self.Features_Validation = self.Features_Validation[self.t_n:]
         self.Labels_Validation = self.Labels_Validation[self.t_n:]
-
 
         ################# For Future Make Sure to Scale only Based On data up to t0 to avoid future data leakage#######
         self.Features_Train = self.scaler.fit_transform(self.Features_Train)
         self.Features_Validation = self.scaler.transform(self.Features_Validation)
         self.Features_Test = self.scaler.transform(self.Features_Test)
 
-        #print(self.Features_Train.shape)
-
+        # print(self.Features_Train.shape)
 
     def create_sliding_windows(self, data_1):
         X = []
@@ -164,7 +215,8 @@ class Parallel_CNN_Classifier:
         return np.array(X)
 
     def build_model(self):
-        input_shape = (self.kernel_depth, self.Features_Train.shape[1])  # Here we define the data that each kernel will be shown
+        input_shape = (
+        self.kernel_depth, self.Features_Train.shape[1])  # Here we define the data that each kernel will be shown
 
         # Use the build_parallel_cnn_model function
         self.model = build_parallel_cnn_model(
@@ -173,7 +225,7 @@ class Parallel_CNN_Classifier:
             pool_type=self.pool_type,
             pool_size=self.pool_size,
             dropout_rate=self.dropout_rate,
-            dense_layer_dropout_rate = self.dense_layer_dropout_rate,
+            dense_layer_dropout_rate=self.dense_layer_dropout_rate,
             dense_layers=self.dense_layers,
             output_units=self.output_units,
             output_activation=self.output_activation,
@@ -187,15 +239,22 @@ class Parallel_CNN_Classifier:
         self.model.summary()
 
     def train(self):
+        if self.add_noise_to_training:
+            train_feature_label_with_noise = NoisySequence(self.Features_Train_reshaped, self.Labels_Train[self.kernel_depth - 1:]['Label'].values, batch_size= self.batch_size, shuffle= True)
+            self.history = self.model.fit(
+                train_feature_label_with_noise,
+                validation_data=(self.Features_Validation_reshaped, self.Labels_Validation[self.kernel_depth - 1:]['Label']),
+                epochs = self.epochs
+                )
 
-
-        self.history = self.model.fit(
-            self.Features_Train_reshaped,
-            self.Labels_Train[self.kernel_depth - 1:]['Label'],
-            epochs=self.epochs,
-            batch_size=self.batch_size,
-            validation_data=(self.Features_Validation_reshaped, self.Labels_Validation[self.kernel_depth - 1:]['Label'])
-        )
+        else:
+            self.history = self.model.fit(
+                self.Features_Train_reshaped,
+                self.Labels_Train[self.kernel_depth - 1:]['Label'],
+                epochs=self.epochs,
+                batch_size=self.batch_size,
+                validation_data=(self.Features_Validation_reshaped, self.Labels_Validation[self.kernel_depth - 1:]['Label'])
+            )
 
     def evaluate(self):
         loss, acc, precision = self.model.evaluate(self.Features_Test_reshaped,
@@ -210,7 +269,7 @@ class Parallel_CNN_Classifier:
         entry_i = 0
         equity_curve = []
 
-        #for i in range(0, len(preds)):
+        # for i in range(0, len(preds)):
 
         #    if in_position == False and preds[i] == 1:
         #        entry_i = i
@@ -220,69 +279,64 @@ class Parallel_CNN_Classifier:
         #            equity_curve.append(self.Labels_Test.iloc[i]['Return'])
         #        else:
         #            equity_curve.append(-1 * self.Labels_Test.iloc[i]['Return'])
-            
+
         #    if in_position == True and i < entry_i + self.t_n:
         #        equity_curve.append(0)
-            
+
         #    if in_position == True and i >= entry_i + self.t_n:
-        #        in_position = False 
+        #        in_position = False
         #        entry_i = 0
 
-# Implementation of an equity curve which continiously updates the postion, goes from a position size of -1 to 1 and changes by 10% of position size per prediction
-# Currently testing the idea that continiously enter into the position based on prediction, but we close continiously after t_n canldes, essentially mimicking the entry logic
+        # Implementation of an equity curve which continiously updates the postion, goes from a position size of -1 to 1 and changes by 10% of position size per prediction
+        # Currently testing the idea that continiously enter into the position based on prediction, but we close continiously after t_n canldes, essentially mimicking the entry logic
 
-        position_entries = {int(i) : 0 for i in range(0, len(preds))}
+        position_entries = {int(i): 0 for i in range(0, len(preds))}
         position_multiplyer = 0
         multiplyer_step = 0.1
 
-
-        for i in range(0, len(preds)): # Loop over each candle
+        for i in range(0, len(preds)):  # Loop over each candle
 
             # First examine the case if we are interested in longs
             if self.predict_return_positive == 1:
 
-                if preds[i] == 1: # If it signals to go long
+                if preds[i] == 1:  # If it signals to go long
 
-                    if position_multiplyer < 1: # Enter the position and hence only keep in mind the exits which are applicable if we were not in the full position
+                    if position_multiplyer < 1:  # Enter the position and hence only keep in mind the exits which are applicable if we were not in the full position
                         position_multiplyer += multiplyer_step
                         position_entries[i] = 1
-                
-                else: # For now this is a question, of whether we should do anything if we get a print of 0 for now we skip
+
+                else:  # For now this is a question, of whether we should do anything if we get a print of 0 for now we skip
                     pass
 
                 if i >= self.t_n:  # We start checking for set-ups that have played out only after t_n candles have passed since we started counting
-                    if position_entries[i - self.t_n] == 1: # Check if t_n candles have passed since entry
+                    if position_entries[i - self.t_n] == 1:  # Check if t_n candles have passed since entry
                         position_multiplyer += - multiplyer_step
-
 
             # This code snippet takes care of the short side of the trades
             if self.predict_return_positive == 0:
 
-                if preds[i] == 1: # If it signals to go short
+                if preds[i] == 1:  # If it signals to go short
 
-                    if position_multiplyer > -1: # Enter the position and hence only keep in mind the exits which are applicable if we were not in the full position
+                    if position_multiplyer > -1:  # Enter the position and hence only keep in mind the exits which are applicable if we were not in the full position
                         position_multiplyer += -multiplyer_step
                         position_entries[i] = 1
 
 
-                    else: # For now this is a question, of whether we should do anything if we get a print of 0 for now we skip
+                    else:  # For now this is a question, of whether we should do anything if we get a print of 0 for now we skip
                         pass
 
                     if i >= self.t_n:  # We start checking for set-ups that have played out only after t_n candles have passed since we started counting
-                        if position_entries[i - self.t_n] == 1: # Check if t_n candles have passed since entry
+                        if position_entries[i - self.t_n] == 1:  # Check if t_n candles have passed since entry
                             position_multiplyer += multiplyer_step
 
             equity_curve.append(position_multiplyer * self.Labels_Test.iloc[i]['1-Period Forward Return'])
 
         plt.plot(np.cumsum(equity_curve))
         plt.title("Equity Curve on the Test Set")
-        plt.show()               
-
+        plt.show()
 
         print(confusion_matrix(self.Labels_Test[self.kernel_depth - 1:]['Label'], preds))
         print(classification_report(self.Labels_Test[self.kernel_depth - 1:]['Label'], preds))
-
-
 
     def plot_Confusion_Matrix(self):
         preds = (self.model.predict(self.Features_Test_reshaped) > 0.5).astype(int)
@@ -299,8 +353,10 @@ class Parallel_CNN_Classifier:
         NPV_0 = TN / (TN + FN) if (TN + FN) > 0 else 0
         FOR_0 = FN / (TN + FN) if (TN + FN) > 0 else 0
 
-        fpr, tpr, _ = roc_curve(self.Labels_Test[self.kernel_depth - 1:]['Label'], self.model.predict(self.Features_Test_reshaped))
-        fpr_0, tpr_0, _ = roc_curve(1 - self.Labels_Test[self.kernel_depth - 1:]['Label'], self.model.predict(self.Features_Test_reshaped))
+        fpr, tpr, _ = roc_curve(self.Labels_Test[self.kernel_depth - 1:]['Label'],
+                                self.model.predict(self.Features_Test_reshaped))
+        fpr_0, tpr_0, _ = roc_curve(1 - self.Labels_Test[self.kernel_depth - 1:]['Label'],
+                                    self.model.predict(self.Features_Test_reshaped))
         auc_1 = auc(fpr, tpr)
         auc_0 = auc(fpr_0, tpr_0)
 
@@ -367,9 +423,10 @@ class Parallel_CNN_Classifier:
         plt.tight_layout()
         plt.show()
 
+
 if __name__ == "__main__":
     Data = pd.read_csv("BTCUSDT3600_First_1k.csv")
-    #Data = Data[:1000]
+    # Data = Data[:1000]
     Parallel_CNN_Classifier(
         # Dataset
         Data='Data',
