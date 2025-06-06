@@ -8,7 +8,7 @@ def build_parallel_cnn_model(
     pool_size=2,
     dropout_rate=0.3,
     dense_layer_dropout_rate = 0.3,
-    dense_layers=[{"units": 128, "activation": "relu"}],
+    dense_layers=[{"units": 128, "activation": "relu", 'kernel_regularizer': None}],
     output_units=3,
     output_activation="softmax",
     padding="same"  # User chooses whether to use padding
@@ -55,8 +55,12 @@ def build_parallel_cnn_model(
     x = Flatten()(x)
 
     for dense_layer in dense_layers:
-        x = Dense(dense_layer["units"], activation=dense_layer["activation"])(x)
 
+        if dense_layer.get('kernel_regulazer', None) != None: # This runs if we have specified a kernel_regularizer parameter while building the model
+            from tensorflow.keras import regularizers
+            x = Dense(dense_layer["units"], activation=dense_layer["activation"], kernel_regularizer = dense_layers['kernel_regularizer'])(x)
+        else:
+            x = Dense(dense_layer["units"], activation=dense_layer["activation"])(x)
             # Add Dropout after each Dense layer (if dense_laer_dropout_rate > 0)
         if dense_layer_dropout_rate > 0:
             x = Dropout(dense_layer_dropout_rate)(x)  # Add dropout here for regularization
