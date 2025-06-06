@@ -3,6 +3,7 @@
 import tensorflow as tf
 from tensorflow.keras.utils import to_categorical  # For multi-class Classification (one-hot encoded labels)
 from tensorflow.keras.metrics import Precision  # Import Precision to keep track
+from tensorflow.keras import regularizers
 
 # Import Sklearn
 from sklearn.model_selection import train_test_split  # to split data into test and train samples
@@ -57,14 +58,14 @@ Organizer = Input_Data_Organizer(
     # Simple Moving Average--------------------
     Use_EMA=False,
     # Choose Length or Lengths for SMA
-    EMA_Length=list(np.arange(3, 30, 1)),
+    EMA_Length=[48],
     # Choose What to Column to use to Calculate SMA on
-    EMA_Source='Close',
+    EMA_Source=['Close'],
 
     # Returns--------------------
     Use_Return=False,
     # Choose Length or Lengths for Return
-    Return_Length=list(np.arange(1, 10, 1)),
+    Return_Length= 12,
     # Choose What to Column to use to Calculate Return on
     Return_Source='Close',
 
@@ -77,26 +78,26 @@ Organizer = Input_Data_Organizer(
 
     # RSI
     Use_RSI = True,
-    RSI_Length = [8,14,22, 34, 55],
+    RSI_Length = [8],
     RSI_Source = 'Close',
 
     # Hawkes
     Use_Hawkes = True,
-    Hawkes_Kappa = [0.1, 0.5], # Decay factor
-    Hawkes_Lookback = 168, # Lookback
+    Hawkes_Kappa = [0.1], # Decay factor
+    Hawkes_Lookback = [168], # Lookback
     Hawkes_Source = ['High', 'Low', 'Close'], # Hawkes requires the order to be High, Low, Close always  ,
 
     # Reversability
-    Use_Reversability = False,
-    Reversability_Lookback = [72, 168],
+    Use_Reversability = True,
+    Reversability_Lookback = [48, 168],
     Reversability_Source = 'Close',
 
     # BBWP
-    Use_BBWP = False,
+    Use_BBWP = True,
     BBWP_Length = [13, 26],
     BBWP_Lookback = [168],
     BBWP_Source = ['Close'],
-    BBWP_MA_Type = 'sma'    
+    BBWP_MA_Type = 'sma'
 )
 
 Input_Data = Organizer.Return_Data()
@@ -130,28 +131,29 @@ print(Input_Data)
 Parallel_CNN_Classifier(
     # Dataset
     Data=Input_Data,
-    t_n=13,
-    include_ohlcv = True, # Whether to include OHLCV as features in the training of the model
+    t_n=25,
+    include_ohlcv = False, # Whether to include OHLCV as features in the training of the model
     predict_return_positive = False,# Predicting Positive or Negative Return
+    add_noise_to_training = True, # This decides whether to add noise to training on each epoch in an attempt to achieve more robust results
+    plot_feature_correlation_matrix = False, # Whether to plot the feature correlation matrix
 
     ####### Creating the Model #########
     kernel_depth = 72,
 
     conv_branches=[
-        [{"filters": 64, "kernel_size": 6}, {"filters": 128, "kernel_size": 3}],
-        [{"filters": 32, "kernel_size": 12}, {"filters": 64, "kernel_size": 6}],
-        [{"filters": 16, "kernel_size": 36}, {"filters": 64, "kernel_size": 12}],
-        [{"filters": 8, "kernel_size": 60}, {"filters": 16, "kernel_size": 24}]
+        [{"filters": 64, "kernel_size": 6}, {"filters": 64, "kernel_size": 3}],
+        [{"filters": 64, "kernel_size": 24}, {"filters": 64, "kernel_size": 12}],
+        [{"filters": 64, "kernel_size": 60}, {"filters": 64, "kernel_size": 36}]
     ],
     pool_type="max",  # "max" or "avg"
-    pool_size=3,
+    pool_size=2,
     dropout_rate=0.3,
-    dense_layer_dropout_rate = 0.3, 
+    dense_layer_dropout_rate = 0.3,
 
     dense_layers=[
         {"units": 256, "activation": "relu"},
-        {"units": 64, "activation": "relu"},
-        {"units": 32, "activation": "relu"}
+        {"units": 64, "activation": "relu"},# 'kernel_regularizer': regularizers.l2(0.0001)}, # Use L2 when features are weakly informative, L1 when features are redundant
+        {"units": 16, "activation": "relu"}#, 'kernel_regularizer': regularizers.l2(0.0001)} # Use L2 when features are weakly informative, L1 when features are redundant
     ],
 
     output_units=1,
@@ -165,7 +167,6 @@ Parallel_CNN_Classifier(
 
     ####### Training the Model ##########
     epochs=30,
-    batch_size=64
+    batch_size=128
 )
-
 
