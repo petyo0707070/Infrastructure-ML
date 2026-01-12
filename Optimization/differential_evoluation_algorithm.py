@@ -4,7 +4,7 @@ from xgboost import XGBClassifier, XGBRegressor
 from scipy.stats import reciprocal
 import matplotlib.pyplot as plt
 from sklearn.base import is_classifier, is_regressor
-from sklearn.metrics import average_precision_score, ConfusionMatrixDisplay, mean_absolute_error
+from sklearn.metrics import average_precision_score, ConfusionMatrixDisplay, mean_absolute_error, f1_score, fbeta_score
 import sys
 import pandas_ta as ta
 import os
@@ -13,6 +13,7 @@ import traceback
 import json
 from sklearn.metrics import jaccard_score # Jacard Score looks at the similarity only when we trade
 import copy
+from sklearn.utils.class_weight import compute_sample_weight
 
 cuda_path = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
 os.environ["CUDA_PATH"] = cuda_path
@@ -22,7 +23,7 @@ import cupy as cp
 class Differential_Evolution:
     def __init__(self, X , y, fitness_function = average_precision_score, pop_size = 200, overint = 1, mutation_rate = 0.1, 
                  shrinkage_constant = None, max_generations = 100, model = XGBClassifier, parameter_dic = None, fixed_parameter_dic = None,
-                 ohlc = None, use_walk_forward = False, walk_forward_train_size = 0.5, walk_forward_step_size = 0.1):
+                 ohlc = None, use_walk_forward = False, walk_forward_train_size = 0.5, walk_forward_step_size = 0.1, XGB_balanced = False):
 
         self.individual_dic = {}
         self.fixed_parameter_dic = fixed_parameter_dic if fixed_parameter_dic is not None else {} 
@@ -40,6 +41,7 @@ class Differential_Evolution:
         self.current_predictions = None
         self.best_fitness_current_generation = None
         self.ran_elitism = False
+        self.XGB_balanced = XGB_balanced
 
         self.use_walk_forward = use_walk_forward
 
@@ -64,7 +66,10 @@ class Differential_Evolution:
             self.use_walk_forward = use_walk_forward
             self.walk_forward_train_size = walk_forward_train_size
             self.walk_forward_step_size = walk_forward_step_size
-            self.population_predictions = np.zeros((self.pop_size, int(self.X.shape[0] * self.walk_forward_train_size)))
+
+            train_size = int(self.X.shape[0] * self.walk_forward_train_size)
+            oos_size = self.X.shape[0] - train_size
+            self.population_predictions = np.zeros((self.pop_size, oos_size))
 
 
         # Seed the initial population
@@ -84,26 +89,48 @@ class Differential_Evolution:
                     self.individual_dic[ind][key] = hyper_parameter# Adds the random hyper parameter to the 'individual'
 
                 model_ = self.model(**self.individual_dic[ind]) # Intialize the model with the hyper parameters of the individual
-                model_.fit(self.X, self.y)
+                
 
                 if isinstance(self.fitness_function, str) == False: # Calculate the fitness using an inbuilt metric if the fitness function is not a string otherwise call the other type
                 
                     if self.model_type == 'classifier':
 
                         if self.use_walk_forward == False: # If NOT a walkforward
+
+                            if self.XGB_balanced and self.model == XGBClassifier:
+                                weights = compute_sample_weight(class_weight='balanced', y=self.y.get().ravel())
+                                model_.fit(self.X, self.y, sample_weight=weights)
+                            else:
+                                model_.fit(self.X, self.y)
+
                             fitness_, returns = self.calculate_fitness_inbuilt_metric(model_)
                         else: # If a walkforward
                             fitness_, returns = self.calculate_fitness_inbuilt_metric_walkforward(self.individual_dic[ind])
 
                     else:
                         if self.use_walk_forward == False:
+
+                            if self.XGB_balanced and self.model == XGBClassifier:
+                                weights = compute_sample_weight(class_weight='balanced', y=self.y.get().ravel())
+                                model_.fit(self.X, self.y, sample_weight=weights)
+                            else:
+                                model_.fit(self.X, self.y)
+
                             fitness_ = self.calculate_fitness_inbuilt_metric(model_)
                         else:
                             fitness_ = self.calculate_fitness_inbuilt_metric_walkforward(self.individual_dic[ind])
                 
                 else:
                     if self.use_walk_forward == False:
+
+                        if self.XGB_balanced and self.model == XGBClassifier:
+                            weights = compute_sample_weight(class_weight='balanced', y=self.y.get().ravel())
+                            model_.fit(self.X, self.y, sample_weight=weights)
+                        else:
+                            model_.fit(self.X, self.y)
+
                         fitness_, returns = self.calculate_fitness_martin_ratio(model_)
+
                     else:
                         fitness_, returns = self.calculate_fitness_martin_ratio_walkforward(self.individual_dic[ind])
 
@@ -154,6 +181,9 @@ class Differential_Evolution:
             print(f"Optimization {generation} completed. Best fitness: {np.min(self.individual_fitness)}")
             # Save the best performer of the current generation
             self.save_best_params(generation)
+
+            if generation >= 20:
+                self.mutation_rate = 0.2 # Decrease the mutation rate to start fine tuning
 
 
     def calculate_martin_ratio(self, returns):
@@ -215,14 +245,28 @@ class Differential_Evolution:
             plt.show()
             '''
             return fitness, returns
-            
+    
+        if self.fitness_function is f1_score:
+            y_pred = model_.predict(self.X)
+            fitness = -1 * self.fitness_function(self.y.get(), y_pred)
+
+            y_ = self.ohlc['return'].values.tolist()
+            returns = np.where(y_pred == 1, y_, 0)
+            self.most_recent_oos_predictions = y_pred
+
+            return fitness, returns
 
         if self.fitness_function is mean_absolute_error:
             y_pred = model_.predict(self.X)
             self.most_recent_oos_predictions = y_pred
             fitness = self.fitness_function(self.y.get(), y_pred)
 
-            return fitness
+        if self.fitness_function is fbeta_score:
+            y_pred = model_.predict(self.X)
+            self.most_recent_oos_predictions = y_pred
+            fitness = -1 * self.fitness_function(self.y.get(), y_pred, beta=0.5)
+
+            return fitness, returns
 
 
     def calculate_fitness_inbuilt_metric_walkforward(self, model_params): # A walk forward version of the inbuilt metric fitness function
@@ -233,6 +277,8 @@ class Differential_Evolution:
 
         all_oos_returns = []
         all_oos_predictions = []
+        all_oos_actual_labels = []
+
         for start_idx in range(0, n_samples - train_size, step_size):
                 train_end = start_idx + train_size
                 test_end = min(train_end + step_size, n_samples)
@@ -241,6 +287,7 @@ class Differential_Evolution:
                 X_train_chunk = self.X[start_idx:train_end]
                 y_train_chunk = self.y[start_idx:train_end]
                 X_test_chunk = self.X[train_end:test_end]
+                y_test_chunk = self.y[train_end:test_end]
                 
                 # Get the real market returns for the test period
                 # We need the ohlc returns aligned with the test indices
@@ -249,19 +296,28 @@ class Differential_Evolution:
                 # Initialize and fit model for this specific window
                 # We use the parameters provided by the DE individual
                 m = self.model(**model_params)
-                m.fit(X_train_chunk, y_train_chunk)
+
+                if self.XGB_balanced and self.model == XGBClassifier:
+                    weights = compute_sample_weight(class_weight='balanced', y=y_train_chunk.get().ravel())
+                    m.fit(X_train_chunk, y_train_chunk, sample_weight=weights)
+                else:
+                    m.fit(X_train_chunk, y_train_chunk)
 
                 # Predict out-of-sample
                 y_pred = m.predict(X_test_chunk)
                 if hasattr(y_pred, 'get'):
                     all_oos_predictions.extend(y_pred.get().tolist())
+                    all_oos_actual_labels.extend(y_test_chunk.get().tolist())
                 else:
                     all_oos_predictions.extend(y_pred.tolist())
-                
+                    all_oos_actual_labels.extend(y_test_chunk.tolist())
+
                 if self.model_type == 'classifier': # If a classifier we also need to include the returns
+                    test_returns_actual = self.ohlc['return'].iloc[train_end:test_end].values
+
                     # Strategy: if prediction is 1, take return, else 0
                     oos_window_returns = np.where(y_pred == 1, test_returns_actual, 0)
-                    all_oos_returns.extend(oos_window_returns)
+                    all_oos_returns.extend(oos_window_returns.tolist())
 
         # Calculate the inbuilt metric on the concatenated out-of-sample returns
         if len(all_oos_returns) == 0 and self.model_type == 'classifier':
@@ -270,9 +326,13 @@ class Differential_Evolution:
         self.most_recent_oos_predictions = all_oos_predictions
 
         if self.model_type == 'classifier':
-            return -1 * self.fitness_function(self.y.get()[train_size:], all_oos_predictions), all_oos_returns
+            if self.fitness_function is fbeta_score:
+                return - 1 * self.fitness_function(all_oos_actual_labels, all_oos_predictions, beta=0.5), all_oos_returns
+
+
+            return -1 * self.fitness_function(all_oos_actual_labels, all_oos_predictions), all_oos_returns
         else:
-            return - 1 * self.fitness_function(self.y.get()[train_size:], all_oos_predictions)
+            return - 1 * self.fitness_function(all_oos_actual_labels, all_oos_predictions)
 
 
     def calculate_fitness_martin_ratio_walkforward(self, model_params):
@@ -299,8 +359,13 @@ class Differential_Evolution:
                 # Initialize and fit model for this specific window
                 # We use the parameters provided by the DE individual
                 m = self.model(**model_params)
-                m.fit(X_train_chunk, y_train_chunk)
-                
+
+                if self.XGB_balanced and self.model == XGBClassifier:
+                    weights = compute_sample_weight(class_weight='balanced', y=y_train_chunk.get().ravel())
+                    m.fit(X_train_chunk, y_train_chunk, sample_weight=weights)
+                else:
+                    m.fit(X_train_chunk, y_train_chunk)
+
                 # Predict out-of-sample
                 y_pred = m.predict(X_test_chunk)
                 
@@ -331,7 +396,12 @@ class Differential_Evolution:
             individual[key] = hyper_parameter# Adds the random hyper parameter to the 'individual'
 
         model_ = self.model(**individual) # Intialize the model with the hyper parameters of the individual
-        model_.fit(self.X, self.y)
+
+        if self.XGB_balanced and self.model == XGBClassifier:
+            weights = compute_sample_weight(class_weight='balanced', y=self.y.get().ravel())
+            model_.fit(self.X, self.y, sample_weight=weights)
+        else:
+            model_.fit(self.X, self.y)
 
         if isinstance(self.fitness_function, str) == False: # Calculate the fitness using an inbuilt metric if the fitness function is not a string otherwise call the other type
         
@@ -487,7 +557,11 @@ class Differential_Evolution:
                     model_ = self.model(**child) # Intialize the model with the hyper parameters of the individual
 
                     try:
-                        model_.fit(self.X, self.y)
+                        if self.XGB_balanced and self.model == XGBClassifier and self.use_walk_forward == False:
+                            weights = compute_sample_weight(class_weight='balanced', y=self.y.get().ravel())
+                            model_.fit(self.X, self.y, sample_weight=weights)
+                        elif self.use_walk_forward == False:
+                            model_.fit(self.X, self.y)
 
                         # Calculate the fitness of the child
                         if isinstance(self.fitness_function, str) == False: # Calculate the fitness using an inbuilt metric if the fitness function is not a string otherwise call the other type
@@ -698,7 +772,8 @@ def fetch_data_class(include_only_weekday = True, return_ohlc = True):
         df = df[df['weekday'] == True]
 
     df = df.dropna()
-    X = df[['ATR', 'RSI', 'Hawkes', 'Reversability', 'premium', 'weekday']].dropna()
+    df = df[0 : int(len(df)*0.64)] # Use only 70% of the data for classification to avoid overfitting due to too much data
+    X = df[['ATR', 'RSI', 'Hawkes', 'Reversability', 'premium', 'weekday']]
     y = df[['y']].loc[X.index]
 
     if return_ohlc:
@@ -813,9 +888,9 @@ if __name__ == "__main__":
         'min_child_weight': [1, 20] # 1 is default, 2-10 moderate regularization, 10+ strong regularization
     }
 
-    de = Differential_Evolution(X = X, y= y, fitness_function= 'Martin Ratio', pop_size=10, overint=1,
+    de = Differential_Evolution(X = X, y= y, fitness_function= average_precision_score, pop_size=30, overint=1,
                                 mutation_rate= 0.5,
                                 model = XGBClassifier,
                                 parameter_dic = parameter_dic_xg_boost, 
                                 fixed_parameter_dic = fixed_parameter_dic_xg_boost_class,
-                                ohlc= ohlc, use_walk_forward= False, max_generations= 70)
+                                ohlc= ohlc, use_walk_forward= True, max_generations= 70, XGB_balanced= True)
